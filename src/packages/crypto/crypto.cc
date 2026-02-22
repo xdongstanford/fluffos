@@ -23,6 +23,12 @@
 #include <openssl/opensslconf.h>
 #include <openssl/evp.h>
 
+/* OpenSSL 1.0.x compatibility */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#define EVP_MD_CTX_new() EVP_MD_CTX_create()
+#define EVP_MD_CTX_free(ctx) EVP_MD_CTX_destroy(ctx)
+#endif
+
 #ifndef OPENSSL_NO_SHA
 #include <openssl/sha.h>
 #endif

@@ -30,9 +30,11 @@
 #include <unicode/uversion.h>
 
 #include "base/internal/tracing.h"
+#include "base/internal/external_port.h"         // for external_port
 #include "thirdparty/scope_guard/scope_guard.hpp"
 #include "packages/core/dns.h"                   // for init_dns_event_base.
 #include "vm/vm.h"                               // for push_constant_string, etc
+#include "compiler/internal/lex.h"               // for lpc_predef_t, lpc_predefs
 #include "comm.h"                                // for init_user_conn
 #include "backend.h"                             // for backend();
 #include "thirdparty/backward-cpp/backward.hpp"  // for backtracing
@@ -241,7 +243,7 @@ void init_win32() {
 #endif
 }
 
-struct event_base *init_main(std::string_view config_file) {
+struct event_base *init_main(std::string_view config_file, int argc, char **argv) {
 #ifdef _WIN32
   init_win32();
 #endif
@@ -251,9 +253,86 @@ struct event_base *init_main(std::string_view config_file) {
   reset_debug_message_fp();
 
   // Make sure mudlib dir is correct.
+  // First try config file setting, then check command line override
+  auto got_mudlib = false;
   auto *root = CONFIG_STR(__MUD_LIB_DIR__);
-  debug_message("Execution root: %s\n", root);
-  if (chdir(root) == -1) {
+  if (chdir(root) != -1) {
+    got_mudlib = true;
+    debug_message("Execution root (from config): %s\n", root);
+  }
+
+  // Parse command line arguments: -m (mudlib), -D (predefines), -p (port)
+  // Example: driver config.cfg -m/home/xktx/mud/yitong -DXKZONE__yitong -DXKZONE_PORT=9003 -p9003
+  for (int i = 1; i < argc; i++) {
+    if (argv[i][0] != '-') {
+      continue;
+    }
+    switch (argv[i][1]) {
+      case 'm': {
+        // -m<mudlib_path> : override mudlib directory
+        auto *mud_lib = argv[i] + 2;
+        if (chdir(mud_lib) == -1) {
+          debug_message("Bad mudlib directory (from -m): '%s'.\n", mud_lib);
+          exit(-1);
+        }
+        got_mudlib = true;
+        debug_message("Execution root (from -m): %s\n", mud_lib);
+        break;
+      }
+      case 'D': {
+        // -D<define> : add LPC predefine (e.g., -DXKZONE__yitong or -DXKZONE_PORT=9003)
+        if (argv[i][2]) {
+          auto *tmp = reinterpret_cast<lpc_predef_t *>(
+              DMALLOC(sizeof(lpc_predef_t), TAG_PREDEFINES, "predef"));
+          tmp->flag = argv[i] + 2;
+          tmp->next = lpc_predefs;
+          lpc_predefs = tmp;
+          debug_message("LPC predefine added: %s\n", argv[i] + 2);
+        } else {
+          debug_message("Illegal flag syntax: %s\n", argv[i]);
+          exit(-1);
+        }
+        break;
+      }
+      case 'p': {
+        // -p<port> : override external port
+        if (argv[i][2]) {
+          int port = atoi(argv[i] + 2);
+          if (port > 0 && port < 65536) {
+            external_port[0].port = port;
+            debug_message("External port override: %d\n", port);
+          } else {
+            debug_message("Invalid port number: %s\n", argv[i] + 2);
+            exit(-1);
+          }
+        } else {
+          debug_message("Illegal flag syntax: %s\n", argv[i]);
+          exit(-1);
+        }
+        break;
+      }
+      case 'a': {
+        // -a : set external port to ASCII type (no telnet negotiation)
+        // This is useful for graphic clients that don't support telnet protocol
+        external_port[0].kind = PORT_TYPE_ASCII;
+        debug_message("External port set to ASCII type (no telnet negotiation)\n");
+        break;
+      }
+      case 'L': {
+        // -L : enable local development mode (all servers use 127.0.0.1)
+        // This adds XKZONE_LOCAL_MODE predefine for LPC code
+        auto *tmp = reinterpret_cast<lpc_predef_t *>(
+            DMALLOC(sizeof(lpc_predef_t), TAG_PREDEFINES, "predef"));
+        tmp->flag = const_cast<char*>("XKZONE_LOCAL_MODE");
+        tmp->next = lpc_predefs;
+        lpc_predefs = tmp;
+        debug_message("Local development mode enabled (XKZONE_LOCAL_MODE defined)\n");
+        break;
+      }
+    }
+  }
+
+  if (!got_mudlib) {
     debug_message("Bad mudlib directory: '%s'.\n", root);
     exit(-1);
   }
@@ -375,11 +454,16 @@ int driver_main(int argc, char **argv) {
 
   auto config_file = get_argument(0, argc, argv);
   if (config_file.empty()) {
-    debug_message("Usage: %s config_file\n", argv[0]);
+    debug_message("Usage: %s config_file [-m<mudlib>] [-D<define>] [-p<port>] [-a] [-L]\n", argv[0]);
+    debug_message("  -m<mudlib>  : override mudlib directory\n");
+    debug_message("  -D<define>  : add LPC predefine\n");
+    debug_message("  -p<port>    : override external port\n");
+    debug_message("  -a          : set port to ASCII type (no telnet negotiation, for graphic clients)\n");
+    debug_message("  -L          : enable local development mode (XKZONE_LOCAL_MODE)\n");
     exit(-1);
   }
 
-  auto *base = init_main(config_file);
+  auto *base = init_main(config_file, argc, argv);
 
   debug_message("==== Runtime Config Table ====\n");
   print_rc_table();
@@ -414,7 +498,12 @@ int driver_main(int argc, char **argv) {
         }
       }
         continue;
-      case 'd':
+      case 'd':  // -d: debug level (already processed)
+      case 'm':  // -m: mudlib directory (already processed in init_main)
+      case 'D':  // -D: LPC predefine (already processed in init_main)
+      case 'p':  // -p: port override (already processed in init_main)
+      case 'a':  // -a: ASCII port type (already processed in init_main)
+      case 'L':  // -L: local mode (already processed in init_main)
         continue;
       case '-':
         if (strcmp(argv[i], "--tracing") == 0) {

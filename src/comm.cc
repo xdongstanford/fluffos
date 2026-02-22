@@ -44,6 +44,89 @@ namespace fs = ghc::filesystem;
 #include "packages/core/dns.h"         // FIXME?
 #include "packages/core/ed.h"          // FIXME?
 
+// XKOS RC4 command decryption for specific commands (f, walk, run, etc.)
+#define XKOS_CMDRC4_COMM
+#ifdef XKOS_CMDRC4_COMM
+#include <openssl/rc4.h>
+
+static char *xkos_cmdrc4_unescape(const char *p, const char *q, char *o) {
+  // \r\n\0 <R><N><0>
+  while (p < q) {
+    if (q-p >= 3 && p[0] == '<' && p[2] == '>') {
+      switch (p[1]) {
+        case 'R': *o++ = '\r'; p += 3; continue;
+        case 'N': *o++ = '\n'; p += 3; continue;
+        case '0': *o++ = '\0'; p += 3; continue;
+      }
+    }
+    *o++ = *p++;
+  }
+  return o;
+}
+
+static char const *xkos_cmdrc4_find_body_if_need_decrypt(char const *p, char const *q) {
+  // f/walk/run/gotoxy/fight/kill/pkill/gokill/jmp
+  int n = q - p;
+  switch (p[0]) {
+    case 'f':
+      if (n > 2 && p[1] == ' ') return p + 2;
+      if (n > 6 && p[1] == 'i' && p[2] == 'g' && p[3] == 'h' && p[4] == 't' && p[5] == ' ') return p + 6;
+      return NULL;
+    case 'w': if (n > 5 && p[1] == 'a' && p[2] == 'l' && p[3] == 'k' && p[4] == ' ') return p + 5; return NULL;
+    case 'r': if (n > 4 && p[1] == 'u' && p[2] == 'n' && p[3] == ' ') return p + 4; return NULL;
+    case 'g':
+      if (n > 7 && p[1] == 'o' && p[6] == ' ') {
+        if (p[2] == 't' && p[3] == 'o' && p[4] == 'x' && p[5] == 'y' && p[6] == ' ') return p + 7;
+        if (p[2] == 'k' && p[3] == 'i' && p[4] == 'l' && p[5] == 'l' && p[6] == ' ') return p + 7;
+      }
+      return NULL;
+    case 'k': if (n > 5 && p[1] == 'i' && p[2] == 'l' && p[3] == 'l' && p[4] == ' ') return p + 5; return NULL;
+    case 'p': if (n > 6 && p[1] == 'k' && p[2] == 'i' && p[3] == 'l' && p[4] == 'l' && p[5] == ' ') return p + 6; return NULL;
+    case 'j': if (n > 4 && p[1] == 'm' && p[2] == 'p' && p[3] == ' ') return p + 4; return NULL;
+  }
+  return NULL;
+}
+
+static char *xkos_cmdrc4_filter_one_cmd(char const *p, char const *q, char *o) {
+  char const *body = xkos_cmdrc4_find_body_if_need_decrypt(p, q);
+  if (body) {
+    char *e;
+    memcpy(o, p, body-p);
+    o += body-p;
+    e = xkos_cmdrc4_unescape(body, q, o);
+    RC4_KEY real_rc4key;
+    RC4_set_key(&real_rc4key, 5, (const unsigned char *)"\x12\xab\xcd\xef\x89");
+    RC4(&real_rc4key, e-o, (const unsigned char*)o, (unsigned char*)o);
+    o = e;
+  } else {
+    memcpy(o, p, q-p);
+    o += q-p;
+  }
+  *o++ = '\n';
+  return o;
+}
+
+static int xkos_cmdrc4_filter_buf(char *buf, int n) {
+  char const *p = buf;
+  char const *q = buf;
+  char const *e = buf + n;
+  char *o = buf;
+  while (q < e) {
+    if (*q == '\r' || *q == '\n') {
+      if (q > p) o = xkos_cmdrc4_filter_one_cmd(p, q, o);
+      p = q + 1; // new start
+    }
+    ++q;
+  }
+  // incomplete line
+  if (p < q) {
+    memcpy(o, p, q - p);
+    o += q - p;
+  }
+  return o - buf;
+}
+#endif // XKOS_CMDRC4_COMM
+
 // in backend.cc
 extern void update_load_av();
 /*
@@ -764,6 +847,11 @@ void get_user_data(interactive_t *ip) {
       break;
     case PORT_TYPE_TELNET: {
       int const start = ip->text_end;
+
+#ifdef XKOS_CMDRC4_COMM
+      // Decrypt RC4 encrypted commands (f, walk, run, etc.) before telnet processing
+      num_bytes = xkos_cmdrc4_filter_buf(reinterpret_cast<char *>(buf), num_bytes);
+#endif
 
       // this will read data into ip->text
       telnet_recv(ip->telnet, reinterpret_cast<const char *>(&buf[0]), num_bytes);

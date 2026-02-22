@@ -155,7 +155,7 @@ void f_refs() {
 }
 #endif
 
-#ifdef F_DESTRUCTED_OBJECTS
+#if defined(F_DESTRUCTED_OBJECTS) && defined(DEBUG)
 void f_destructed_objects() {
   int i;
   array_t *ret;

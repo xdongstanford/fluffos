@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
 
   // Initialize libevent, This should be done before executing LPC.
   auto config = get_argument(0, argc, argv);
-  auto* base = init_main(config);
+  auto* base = init_main(config, argc, argv);
 
   vm_start();
 

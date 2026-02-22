@@ -7,14 +7,15 @@ option(ENABLE_SANITIZER "Build driver with sanitizer support" OFF)
 option(PACKAGE_ASYNC "async package" ON)
 option(PACKAGE_COMPRESS "compress package" ON)
 option(PACKAGE_CONTRIB "contrib package" ON)
+option(PACKAGE_XK "xk package" ON)
 # PACKAGE CORE should always be on
 set(PACKAGE_CORE ON)
 option(PACKAGE_CRYPTO "crypto package" ON)
-option(PACKAGE_DB "db package" ON)
-set(PACKAGE_DB_MYSQL "1" CACHE STRING "DB Type for Mysql")
+option(PACKAGE_DB "db package" OFF)
+set(PACKAGE_DB_MYSQL "" CACHE STRING "DB Type for Mysql")
 set(PACKAGE_DB_POSTGRESQL "" CACHE STRING "DB Type for POSTGRESQL")
 set(PACKAGE_DB_SQLITE "" CACHE STRING "DB Type for SQLITE")
-set(PACKAGE_DB_DEFAULT_DB "1" CACHE STRING "Default DB Handle")
+set(PACKAGE_DB_DEFAULT_DB "" CACHE STRING "Default DB Handle")
 option(PACKAGE_DEVELOP "compress package" ON)
 option(PACKAGE_MATH "math package" ON)
 option(PACKAGE_MATRIX "matrix package" ON)
@@ -22,7 +23,7 @@ option(PACKAGE_MUDLIB_STATS "mudlib_stats package" ON)
 # Package OPS is always on
 set(PACKAGE_OPS ON)
 option(PACKAGE_PARSER "parser package" ON)
-option(PACKAGE_PCRE "pcre package" ON)
+option(PACKAGE_PCRE "pcre package" OFF)
 option(PACKAGE_SHA1 "sha1 package" ON)
 option(PACKAGE_SOCKETS "sockets package" ON)
 option(PACKAGE_TRIM "trim package" ON)
@@ -39,11 +40,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Setup include directoires
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
+set(CMAKE_INCLUDE_PATH ${CMAKE_INCLUDE_PATH} "/usr/local/pgsql/include")
+set(PostgreSQL_ROOT "/usr/local/pgsql")
+
+include_directories("/usr/local/pgsql/include")
+link_directories("/usr/local/pgsql/lib")
 
 foreach (lang C CXX)
   set(CMAKE_${lang}_VISIBILITY_PRESET hidden)
@@ -71,12 +76,10 @@ if (${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU" OR ${CMAKE_CXX_COMPILER_ID} STREQUAL
 
   # Sanitizer support
   if (ENABLE_SANITIZER)
-    add_compile_options("-fsanitize=address")
-    #add_compile_options("-fsanitize=undefined")
+    add_compile_options("-fsanitize=address,undefined")
     add_compile_options("-fno-common")
-
-    add_link_options("-fsanitize=address")
-    #add_link_options("-fsanitize=undefined")
+    # add_linker_options is only avaiable cmake 3.13
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address,undefined -fno-common")
   else ()
     add_compile_options(
       "-D_FORTIFY_SOURCE=2"
@@ -201,9 +204,8 @@ endif ()
 
 # System Libraries
 find_package(OpenSSL 1.0.1 COMPONENTS SSL REQUIRED)
-include_directories(AFTER SYSTEM ${OPENSSL_INCLUDE_DIR})
+include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
 
-set(ICU_DEBUG ON)
 find_package(ICU REQUIRED COMPONENTS uc dt)
 # Make ICU use utf-8 internally
 add_compile_options("-DU_CHARSET_IS_UTF8=1")
@@ -212,7 +214,7 @@ if(STATIC)
 ENDIF()
 
 # multiple packages uses this, so we simply do a global inclusion too.
-include_directories(AFTER SYSTEM ${ICU_INCLUDE_DIRS})
+include_directories(SYSTEM ${ICU_INCLUDE_DIRS})
 
 # Bundled libraries
 set(EVENT__DISABLE_BENCHMARK ON CACHE BOOL "" FORCE)
@@ -234,7 +236,7 @@ add_subdirectory(thirdparty/filesystem EXCLUDE_FROM_ALL)
 include_directories(thirdparty/filesystem/include)
 add_subdirectory(thirdparty/fmt EXCLUDE_FROM_ALL)
 include_directories(thirdparty/fmt/include)
-include_directories(AFTER SYSTEM thirdparty/json/include)
+include_directories(SYSTEM thirdparty/json/include)
 add_subdirectory(thirdparty/backward-cpp EXCLUDE_FROM_ALL)
 include_directories(AFTER SYSTEM thirdparty/argparse/include)
 
@@ -257,8 +259,7 @@ set(LWS_WITH_LEJP OFF CACHE BOOL "" FORCE)
 set(LWS_WITH_LEJP_CONF OFF CACHE BOOL "" FORCE)
 set(LWS_UNIX_SOCK OFF CACHE BOOL "" FORCE)
 set(LWS_WITH_NETLINK OFF CACHE BOOL "" FORCE)
-set(OPENSSL_INCLUDE_DIRS ${OPENSSL_INCLUDE_DIR} CACHE STRING "" FORCE)
-set(OPENSSL_FOUND 1) # hack to avoid lws re-search openssl
+set(OPENSSL_FOUND 0) # hack to force lws re-search openssl
 set(LIBEVENT_FOUND 1) # hack to stop libwebsockets from finding libevent
 set(LIBEVENT_LIBRARIES "event_core_static")
 add_subdirectory(thirdparty/libwebsockets EXCLUDE_FROM_ALL)
@@ -291,10 +292,6 @@ set(GENERATRED_SOURCE
   "${CMAKE_CURRENT_BINARY_DIR}/options.autogen.h"
   )
 
-set(GENERATRED_DOCS
-  "${CMAKE_CURRENT_BINARY_DIR}/keywords.json"
-)
-
 add_custom_command(
   OUTPUT "applies_table.autogen.cc" "applies_table.autogen.h"
   COMMAND "build_applies" "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -322,12 +319,6 @@ add_custom_command(
   OUTPUT "options.autogen.h"
   COMMAND "make_options_defs" "-I${CMAKE_CURRENT_BINARY_DIR}" "-I${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/base/internal/options_incl.h"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/base/internal/options_incl.h"
-)
-
-add_custom_command(
-  OUTPUT "keywords.json"
-  COMMAND "generate_keywords"
-  DEPENDS "generate_keywords" "${CMAKE_CURRENT_BINARY_DIR}/efuns.autogen.h"
 )
 
 find_package(BISON 3.8)
@@ -441,6 +432,15 @@ if(ENABLE_SANITIZER)
 endif()
 
 if (USE_JEMALLOC)
+#find_package(PkgConfig REQUIRED)
+#pkg_check_modules (JEMALLOC jemalloc)
+
+#pkg_search_module(JEMALLOC REQUIRED jemalloc)
+#include_directories(${JEMALLOC_INCLUDE_DIRS})
+
+#target_link_libraries(your_target_name ${JEMALLOC_LIBRARIES})
+
+
   find_package(jemalloc REQUIRED)
   set(HAVE_JEMALLOC TRUE) # used in config.h.in
   message(STATUS "Jemalloc Version: ${JEMALLOC_VERSION}, linking ${JEMALLOC_LIBRARIES}")
@@ -451,7 +451,9 @@ endif ()
 # end of JEMALLOC
 
 target_link_libraries(libdriver PUBLIC ghc_filesystem)
-target_link_libraries(libdriver PUBLIC fmt::fmt)
+
+add_compile_options("-DFMT_HEADER_ONLY=1")
+target_link_libraries(libdriver PRIVATE fmt::fmt-header-only)
 
 list(APPEND FLUFFOS_LIBRARIES autogen)
 
@@ -478,6 +480,7 @@ add_backward(libdriver)
 # System libraries
 target_link_libraries(libdriver PUBLIC OpenSSL::SSL)
 target_link_libraries(libdriver PUBLIC ${ICU_LIBRARIES})
+# target_link_libraries(libdriver PUBLIC ${LIBEVENT_LIBRARIES})
 
 # Platform Libraries
 
@@ -496,6 +499,11 @@ CHECK_LIBRARY_EXISTS(rt clock_gettime "time.h" HAVE_CLOCK_GETTIME_IN_RT)
 if (HAVE_CLOCK_GETTIME_IN_RT)
   target_link_libraries(libdriver PUBLIC rt)
 endif ()
+
+# GTEST
+#include(GoogleTest)
+#enable_testing()
+#gtest_discover_tests(driver)
 
 set(LINK_WHOLE_ARCHIVE -Wl,--whole-archive)
 set(LINK_NO_WHOLE_ARCHIVE -Wl,--no-whole-archive)
@@ -519,9 +527,6 @@ target_link_libraries(lpcc PUBLIC ${FLUFFOS_LINK})
 add_executable(symbol "main_symbol.cc")
 target_link_libraries(symbol PUBLIC ${FLUFFOS_LINK})
 
-add_executable(generate_keywords "main_generate_keywords.cc")
-target_link_libraries(generate_keywords PUBLIC ${FLUFFOS_LINK})
-
 add_executable(o2json "main_o2json.cc")
 target_link_libraries(o2json PUBLIC ${FLUFFOS_LINK})
 
@@ -536,9 +541,7 @@ print_iterface_target_properties(libdriver)
 message(STATUS "Final Compile Flags for driver: ")
 print_target_properties(driver)
 
-install(TARGETS ${GENERATED_DOCS}
-        RUNTIME DESTINATION bin)
-
+#install(TARGETS driver lpcc)
 install(TARGETS driver lpcc symbol o2json json2o
   RUNTIME DESTINATION bin)
 
@@ -566,13 +569,6 @@ if (${BISON_FOUND})
           COMMAND "${CMAKE_COMMAND}" -E copy "${BISON_Grammar_OUTPUT_SOURCE}" ${CMAKE_CURRENT_SOURCE_DIR}/compiler/internal/
           COMMAND "${CMAKE_COMMAND}" -E copy "${BISON_Grammar_OUTPUT_HEADER}" ${CMAKE_CURRENT_SOURCE_DIR}/compiler/internal/
           COMMENT "Copying to output directory")
-endif()
-
-find_package(GTest)
-if(${GTEST_FOUND})
-  include(GoogleTest)
-  enable_testing()
-  add_subdirectory(tests)
 endif()
 
 # Must keep this line at the end, so we get all the variables.

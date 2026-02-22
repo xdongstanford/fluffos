@@ -88,5 +88,8 @@ static const int TAG_INTERPRETER = (TAG_PERMANENT + 51);
 #ifdef PACKAGE_PCRE
 static const int TAG_PCRE_CACHE = (TAG_PERMANENT + 52);
 #endif
+#ifdef PACKAGE_XK
+static const int TAG_XK = (TAG_PERMANENT + 53);
+#endif
 
 #endif

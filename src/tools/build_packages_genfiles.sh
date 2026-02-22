@@ -17,12 +17,15 @@ PACKAGES=$("$@" -E -undef -dM $ALL_OPTIONS_H | grep PACKAGE_ | cut -d " " -f 2)
 
 for P in $PACKAGES; do
 	# get the package name, in uppercase
-	P=${P#PACKAGE_} 
+	P=${P#PACKAGE_}
 	# get the directory and file name
 	DIR=$(echo $P | tr '[:upper:]' '[:lower:]')
 
 	if [[ -e "${TOP_SRCDIR}/src/packages/$DIR/$DIR.spec" ]]; then
 		echo "#include \"${TOP_SRCDIR}/src/packages/$DIR/$DIR.spec\"" >> $PACKAGES_SPEC
+	elif [[ -e "${TOP_SRCDIR}/src/$DIR/$DIR.spec" ]]; then
+		# Support for packages in non-standard locations (e.g., xk)
+		echo "#include \"${TOP_SRCDIR}/src/$DIR/$DIR.spec\"" >> $PACKAGES_SPEC
 	else
 		echo "Warning: ${TOP_SRCDIR}/src/packages/$DIR/$DIR.spec is missing."
 	fi

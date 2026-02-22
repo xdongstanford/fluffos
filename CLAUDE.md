@@ -390,3 +390,230 @@ cmake -G "MSYS Makefiles" -DMARCH_NATIVE=OFF \
 1. Build with `-DENABLE_SANITIZER=ON`
 2. Use `mud_status()` efun in LPC for runtime memory info
 3. Check `testsuite/log/debug.log` for detailed logs
+
+## XK Package (XKOS Extension)
+
+The XK package (`src/packages/xk/`) is a custom extension providing enhanced PostgreSQL support, JSON handling, and utility functions. It is designed as an alternative to the standard `PACKAGE_DB` for PostgreSQL-focused projects.
+
+### Configuration
+
+To use the XK package, configure `src/local_options`:
+
+```c
+#define XKOS 160622
+#define PACKAGE_XK
+#undef PACKAGE_DB        // Disable standard DB package (conflicts with XK PostgreSQL)
+#undef PACKAGE_PCRE      // Optional: disable if not needed
+```
+
+Build command:
+
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Debug -DPACKAGE_DB=OFF -DPACKAGE_PCRE=OFF
+make -j$(nproc) install
+```
+
+### PostgreSQL Functions
+
+The XK package provides a feature-rich PostgreSQL interface using libpq with parameterized queries and async support.
+
+| Function | Description |
+|----------|-------------|
+| `int pg_connect(string conninfo)` | Connect to PostgreSQL. Returns connection handle (0-9) or -1 on failure |
+| `int pg_close(int handle)` | Close a connection. Returns 1 on success |
+| `int pg_ok(int handle)` | Check if connection is valid. Returns 1 if OK |
+| `mixed pg_call(int handle, string query, ...)` | Execute sync query with parameters. Returns array of results or error string |
+| `void pg_send(int handle, string query, ...)` | Send async query (non-blocking) |
+| `mixed pg_get(int handle)` | Get results from async query. Returns array, 0 (busy), or error string |
+| `string pg_look()` | Debug: show all connection statuses |
+
+**Key Features vs Standard PACKAGE_DB:**
+
+- **Parameterized Queries**: Uses `PQexecParams` with `$1, $2, ...` placeholders for SQL injection protection
+- **Async/Streaming Support**: `pg_send`/`pg_get` for non-blocking queries
+- **Smart Type Conversion**: Automatically converts PostgreSQL types to LPC types:
+  - `INT4/INT8` → LPC int
+  - `FLOAT4/FLOAT8/NUMERIC` → LPC float
+  - `JSON/JSONB` → Parsed LPC mixed (array/mapping)
+  - `BOOL` → LPC int (0/1)
+  - Others → LPC string
+- **Connection Pooling**: Supports up to 10 concurrent connections (handles 0-9)
+
+**Example Usage:**
+
+```c
+// Connect
+int db = pg_connect("host=localhost dbname=mydb user=myuser");
+if (db < 0) error("Connection failed");
+
+// Parameterized query (safe from SQL injection)
+mixed result = pg_call(db, "SELECT * FROM users WHERE id = $1 AND status = $2", 123, "active");
+
+// Async query
+pg_send(db, "SELECT * FROM large_table WHERE category = $1", "items");
+// ... do other work ...
+mixed rows = pg_get(db);  // 0 if still busy, array if done, string if error
+
+// Cleanup
+pg_close(db);
+```
+
+### JSON Functions
+
+| Function | Description |
+|----------|-------------|
+| `string json_stringify(mixed data, int strict = 0)` | Convert LPC value to JSON string. Set strict=1 for strict type checking |
+| `mixed json_parse(string json)` | Parse JSON string to LPC value (array/mapping/string/int/float) |
+
+**Features:**
+
+- Lightweight pure C implementation (no external library dependency)
+- Max input size: 600KB (`JSON_MAX_SIZE`)
+- Max nesting depth: 25 levels (`JSON_MAX_DEPTH`)
+- Strict mode: optionally error on non-string mapping keys or unsupported types
+
+**Type Mapping:**
+
+```
+LPC → JSON:
+  T_STRING   → "string"
+  T_NUMBER   → 123
+  T_REAL     → 1.5 (15 digits precision)
+  T_ARRAY    → [...]
+  T_MAPPING  → {...}  (string keys only, non-string keys skipped in non-strict mode)
+  Other      → null
+
+JSON → LPC:
+  "string"   → T_STRING
+  123        → T_NUMBER (int)
+  1.5        → T_REAL (float)
+  true/false → 1/0 (T_NUMBER)
+  null       → 0
+  [...]      → T_ARRAY
+  {...}      → T_MAPPING
+```
+
+**XK JSON vs FluffOS Official JSON Support:**
+
+FluffOS does **not** provide JSON efuns. The official JSON support is limited to:
+
+| Feature | FluffOS Official | XK Package |
+|---------|------------------|------------|
+| LPC efun | **No** | **Yes** ✓ |
+| Runtime usage | Not available | Available ✓ |
+| Purpose | Save file conversion (CLI tools `o2json`/`json2o`) | General JSON processing |
+| Implementation | nlohmann/json (C++) | Pure C parser |
+| Use case | Convert `.o` files offline | API calls, config, data exchange |
+
+**Note**: If your MUD needs to process JSON at runtime (API calls, configuration files, data exchange), you must use the XK package or implement similar functionality yourself.
+
+### Utility Functions
+
+| Function | Description |
+|----------|-------------|
+| `void stdout(string format, ...)` | Print formatted string to stdout |
+| `void stderr(string format, ...)` | Print formatted string to stderr |
+| `float ftime()` | Get current time as float with microsecond precision |
+| `float fuptime()` | Get driver uptime as float with microsecond precision |
+| `mixed *shuffle_array(mixed *arr)` | Randomly shuffle array elements (Fisher-Yates algorithm) |
+
+### Debug/System Functions
+
+| Function | Description |
+|----------|-------------|
+| `void let_us_make_a_crash()` | Intentionally crash the driver (debugging only) |
+| `string xk_cmdrc4(string data)` | RC4 encrypt/decrypt string |
+| `string malloc_stats_print(string opts)` | Print jemalloc memory statistics |
+
+### XK vs Standard PACKAGE_DB Comparison
+
+| Feature | XK Package | PACKAGE_DB (PostgreSQL) |
+|---------|------------|-------------------------|
+| Parameterized Queries | Yes (`$1, $2, ...`) | No (string concatenation) |
+| Async Queries | Yes (`pg_send`/`pg_get`) | No |
+| Type Conversion | Automatic (int, float, JSON) | All strings |
+| JSON Auto-Parse | Yes (JSONB → LPC mapping) | No |
+| Connection Limit | 10 handles | Configurable |
+| Multi-DB Support | PostgreSQL only | MySQL, PostgreSQL, SQLite |
+| Security Validation | Direct access | `valid_database` apply |
+
+**Recommendation**: Use XK package for pure PostgreSQL projects requiring parameterized queries, async operations, or automatic JSON handling. Use standard PACKAGE_DB for multi-database projects or when `valid_database` security validation is needed.
+
+## 开发环境
+
+### 路径对应关系
+
+| 用途 | Windows 路径 | Ubuntu (WSL) 路径 |
+|------|-------------|------------------|
+| FluffOS 源码 | `d:/ai/fluffos` | `/mnt/d/ai/fluffos` |
+| Mudlib 代码 | `d:/ai/xktx` | `/mnt/d/ai/xktx` |
+| Mudlib 运行目录 | - | `/home/xktx/mud/cross` (符号链接到 `/mnt/d/ai/xktx`) |
+| FluffOS 可执行文件 | - | `/home/xktx/bin/driver` |
+| 配置文件 | - | `/home/xktx/bin/xklib.conf` |
+
+### WSL 使用方法
+
+使用 WSL Ubuntu 24.04 运行 FluffOS：
+
+```bash
+# 在 Windows 中执行 WSL 命令
+wsl -d ubuntu-24.04 -- bash -c "命令"
+```
+
+### FluffOS 编译
+
+```bash
+# 完整重新编译
+wsl -d ubuntu-24.04 -- bash -c "cd /mnt/d/ai/fluffos && rm -rf build && mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Debug -DPACKAGE_DB=OFF -DPACKAGE_PCRE=OFF -DCMAKE_INSTALL_PREFIX=/home/xktx/bin && make -j4 install"
+
+# 增量编译
+wsl -d ubuntu-24.04 -- bash -c "cd /mnt/d/ai/fluffos/build && make -j4 install"
+```
+
+### 编译类型选择
+
+| 类型 | 优化 | 调试符号 | 速度 | 用途 |
+|------|------|----------|------|------|
+| `Debug` | 无 (`-O0`) | 完整 | 慢 2-10x | 开发调试 |
+| `Release` | 高 (`-O3`) | 无 | 最快 | 生产环境 |
+| `RelWithDebInfo` | 高 (`-O2`) | 有 | 快 | 生产+可调试 |
+
+**建议**：开发用 `Debug`，生产用 `RelWithDebInfo`（有优化且保留堆栈跟踪）：
+
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPACKAGE_DB=OFF -DPACKAGE_PCRE=OFF -DCMAKE_INSTALL_PREFIX=/home/xktx/bin
+```
+
+### 命令行参数
+
+FluffOS driver 支持以下命令行参数：
+
+```bash
+driver config_file [-m<mudlib>] [-D<define>] [-p<port>] [-d<debug>] [-f<flag>]
+```
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `-m<path>` | 覆盖 mudlib 目录 | `-m/home/xktx/mud/yitong` |
+| `-D<define>` | 添加 LPC 预定义宏 | `-DXKZONE__yitong` 或 `-DXKZONE_PORT=9003` |
+| `-p<port>` | 覆盖监听端口 | `-p9003` |
+| `-d<level>` | 设置调试级别 | `-d` 或 `-dall` |
+| `-f<flag>` | 调用 master::flag() | `-ftest` |
+
+### 运行 MUD
+
+```bash
+# 启动 MUD 服务器 (完整示例)
+wsl -d ubuntu-24.04 -- bash -c "/home/xktx/bin/driver /home/xktx/bin/xklib.conf -m/home/xktx/mud/cross -DXKZONE__cross -DXKZONE_PORT=9001 -p9001"
+
+# 或使用编译目录的 driver
+wsl -d ubuntu-24.04 -- bash -c "/mnt/d/ai/fluffos/build/bin/driver /home/xktx/bin/xklib.conf -m/home/xktx/mud/cross -DXKZONE__cross -p9001"
+```
+
+### 注意事项
+
+- 配置文件 `xklib.conf` 必须是 UTF-8 编码
+- Mudlib 源文件如包含中文，需使用 UTF-8 编码（或启用 `USE_ICONV`）
+- `-m` 参数会覆盖配置文件中的 `mudlib directory` 设置
+- `-D` 参数添加的宏可在 LPC 代码中用 `#ifdef` 检测
+- PACKAGE_XK 与 PACKAGE_DB 冲突，编译时需禁用 PACKAGE_DB

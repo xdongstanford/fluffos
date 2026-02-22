@@ -82,7 +82,11 @@ SSL_CTX* tls_client_init() {
 
   SSL_CTX* ctx;
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+  ctx = SSL_CTX_new(SSLv23_client_method());
+#else
   ctx = SSL_CTX_new(TLS_client_method());
+#endif
 
   SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
   SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv3);
