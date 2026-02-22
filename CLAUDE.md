@@ -617,3 +617,33 @@ wsl -d ubuntu-24.04 -- bash -c "/mnt/d/ai/fluffos/build/bin/driver /home/xktx/bi
 - `-m` 参数会覆盖配置文件中的 `mudlib directory` 设置
 - `-D` 参数添加的宏可在 LPC 代码中用 `#ifdef` 检测
 - PACKAGE_XK 与 PACKAGE_DB 冲突，编译时需禁用 PACKAGE_DB
+
+## PACKAGE_XK 已知问题与修复记录
+
+### json_parse 内存泄漏 (2026-02-23 已修复)
+
+**根因**: `json_parse__resize_array()` 在数组扩容时未释放旧数组，每次 `json_parse` 调用解析含数组的 JSON 都会泄漏 ~1.27KB。在高负载服务器 (60+ 玩家) 表现为 ~50MB/min 的内存持续增长。
+
+**诊断方法**:
+1. 用 `memory_info()` 对比总 LPC 内存 vs `memory_info(ob)` 逐对象求和，发现 "gap"（非对象内存）持续增长
+2. 用 30 秒/60 秒快照对比定位增长源头为 driver 内部分配而非 LPC 对象
+3. 审查 PACKAGE_XK 中所有 `allocate_array` 调用，找到 `json_parse__resize_array` 的泄漏
+
+**关键代码模式** (避免在 FluffOS 中再犯):
+```c
+// 错误: allocate_array 后直接覆盖指针，旧数组丢失
+v->u.arr = allocate_array(new_size);
+memcpy(v->u.arr->item, old_items, ...);
+
+// 正确: 保存旧指针 → 拷贝 → 清零已拷贝项 → 释放旧数组
+array_t *oldarr = v->u.arr;
+array_t *newarr = allocate_array(new_size);
+memcpy(newarr->item, oldarr->item, copy_n * sizeof(svalue_t));
+for (size_t i = 0; i < copy_n; i++) oldarr->item[i] = const0u;  // 防 double-free
+free_array(oldarr);
+v->u.arr = newarr;
+```
+
+### Postgres_fetch_row NULL 字段跳过 (2026-02-23 已修复)
+
+`PQgetisnull` 检测到 NULL 后误用 `return` 退出整个函数，应为 `continue` 跳过当前字段继续处理后续字段。
