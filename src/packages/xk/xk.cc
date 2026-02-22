@@ -483,10 +483,17 @@ finish:
 
 void json_parse__resize_array(svalue_t *v, size_t m) {
   size_t n = v->u.arr->size;
+  array_t *oldarr = v->u.arr;
   array_t *newarr = allocate_array(m);
-  memcpy(newarr->item, v->u.arr->item, (m < n ? m : n) * sizeof(svalue_t));
-  //dealloc_empty_array(v->u.arr);
-  //allocate_empty_array(v->u.arr);
+  size_t copy_n = m < n ? m : n;
+  // 浅拷贝 items 到新数组（不改变引用计数）
+  memcpy(newarr->item, oldarr->item, copy_n * sizeof(svalue_t));
+  // 将已拷贝的 items 在旧数组中清零，防止 free_array 时 double-free
+  for (size_t i = 0; i < copy_n; i++) {
+    oldarr->item[i] = const0u;
+  }
+  // 安全释放旧数组（缩小时多余的 items 会被正确 free_svalue）
+  free_array(oldarr);
   v->u.arr = newarr;
 }
 
@@ -849,7 +856,7 @@ static void Postgres_fetch_row(dbconn_t *c, int i, svalue_t *row, int start_pos,
     //printf("|%d,%d|%d|%s|\n", i, j, oid, str);
     if (PQgetisnull(c->postgres.res, i, j)) {
       *field = const0u;
-      return;
+      continue;
     }
 #define BOOLOID      16
 #define INT8OID      20
