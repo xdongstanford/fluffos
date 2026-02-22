@@ -2,11 +2,14 @@
 #define INTERACITVE_H
 
 #include <openssl/ssl.h>
+#include <openssl/rc4.h>
 #include <event2/util.h>
 
 #include "vm/vm.h"  // FIXME: for union string_or_func
 
-#define MAX_TEXT (1 * 1024 * 1024)
+#define RC4KEY_LENGTH 10
+
+#define MAX_TEXT (64 * 1024)
 
 #define I_NOECHO 0x1          /* input_to flag */
 #define I_NOESC 0x2           /* input_to flag */
@@ -87,6 +90,11 @@ struct interactive_t {
 
   // TLS context
   SSL *ssl;
+
+  // RC4 encryption support for XK
+  char rc4_key[RC4KEY_LENGTH + 1];       // current RC4 key
+  char rc4_next_key[RC4KEY_LENGTH + 1];  // next RC4 key (pending ccok)
+  int rc4_enabled;                        // RC4 encryption is enabled
 };
 
 #endif /* INTERACTIVE_H */
